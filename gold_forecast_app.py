@@ -1,88 +1,95 @@
 import streamlit as st
-from prophet import Prophet
 import yfinance as yf
 import pandas as pd
 import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+import numpy as np
 
-# Set up the web page configuration
+# Set up the page configuration
 st.set_page_config(page_title="Gold Price Prediction App", layout="centered")
-st.title("Gold Price Prediction (Including Global Stock Market Impact)")
-st.markdown("This AI model uses Facebook Prophet to predict gold prices, considering the impact of global stock market trends.")
+st.title("Gold Price Prediction (Considering Global Stock Market Impact)")
+st.markdown("This AI model uses linear regression to predict gold prices, considering the impact of global stock market trends.")
 
-# User selects the forecast period (in days)
+# User selects forecast period (days)
 period = st.selectbox("Choose forecast period", [7, 14, 30])
 
-# Get data for gold and global stock markets
+# Fetch gold and global stock market data
 @st.cache_data
 def get_all_data():
-    # Gold ETF (GLD)
+    # Fetch Gold ETF (GLD) data
     gold = yf.download("GLD", start="2015-01-01")[['Close']].rename(columns={"Close": "gold"})
-    # S&P500
+    
+    # Fetch S&P500 index data
     sp500 = yf.download("^GSPC", start="2015-01-01")[['Close']].rename(columns={"Close": "sp500"})
-    # Nikkei 225
+    
+    # Fetch Nikkei 225 index data
     nikkei = yf.download("^N225", start="2015-01-01")[['Close']].rename(columns={"Close": "nikkei"})
-    # DAX
+    
+    # Fetch DAX index data
     dax = yf.download("^GDAXI", start="2015-01-01")[['Close']].rename(columns={"Close": "dax"})
 
-    # Merge data
-    df = gold.join([sp500, nikkei, dax], how='inner')
+    # Merge data using outer join to avoid losing any columns
+    df = gold.join([sp500, nikkei, dax], how='outer')  # Use 'outer' join to ensure no data loss
+    
+    # Reset index and rename columns for future processing
     df = df.reset_index().rename(columns={"Date": "ds"})
-    df = df.rename(columns={"gold": "y"})  # Prophet requires the target column to be "y"
+    
+    # Rename 'gold' column to 'y' because we need it as the target column for regression
+    df = df.rename(columns={"gold": "y"})
+    
+    # Return the merged dataframe
     return df
 
 df = get_all_data()
 
-# Show historical gold price vs stock market trends
+# Display historical gold prices with stock market trends
 st.subheader("Historical Gold Prices vs Global Stock Markets")
 st.line_chart(df.set_index("ds")[["y", "sp500", "nikkei", "dax"]])
 
-# Create Prophet model with external regressors (stock market data)
-model = Prophet(daily_seasonality=True)
-model.add_regressor("sp500")
-model.add_regressor("nikkei")
-model.add_regressor("dax")
+# Create a linear regression model
+model = LinearRegression()
 
-# Fit the model
-model.fit(df)
+# Prepare the data for regression analysis
+X = df[["sp500", "nikkei", "dax"]]  # Features: stock market data
+y = df["y"]  # Target variable: gold price
 
-# Create future dataframe
-future = model.make_future_dataframe(periods=period)
+# Train the regression model
+model.fit(X, y)
 
-# Add future stock market data (using the most recent data)
+# Fetch the latest stock market data (assuming stock market data won't change dramatically)
 latest_sp500 = df["sp500"].iloc[-1]
 latest_nikkei = df["nikkei"].iloc[-1]
 latest_dax = df["dax"].iloc[-1]
 
-future["sp500"] = df["sp500"].tolist() + [latest_sp500]*period
-future["nikkei"] = df["nikkei"].tolist() + [latest_nikkei]*period
-future["dax"] = df["dax"].tolist() + [latest_dax]*period
+# Create a future dataframe with stock market data filled in
+future_X = pd.DataFrame({
+    "sp500": [latest_sp500] * period,
+    "nikkei": [latest_nikkei] * period,
+    "dax": [latest_dax] * period
+})
 
-# Make prediction
-forecast = model.predict(future)
+# Use the regression model to predict gold prices
+forecast_y = model.predict(future_X)
 
-# Show prediction plot
-st.subheader("Prediction Chart")
-fig1 = model.plot(forecast)
-st.pyplot(fig1)
+# Display prediction chart
+forecast_dates = pd.date_range(df["ds"].iloc[-1], periods=period + 1, freq='D')[1:]
 
-# Show prediction table
-forecast_tail = forecast[['ds', 'yhat']].tail(period).rename(columns={"ds": "Date", "yhat": "Predicted Price"})
-forecast_tail["Predicted Price"] = forecast_tail["Predicted Price"].round(2)
+# Create a DataFrame to store the prediction results
+forecast_df = pd.DataFrame({
+    "Date": forecast_dates,
+    "Predicted Price": forecast_y
+})
+
 st.subheader(f"Prediction for the next {period} days (in USD)")
-st.dataframe(forecast_tail)
+st.dataframe(forecast_df)
 
-# Summary in English
-start_price = forecast_tail["Predicted Price"].iloc[0]
-end_price = forecast_tail["Predicted Price"].iloc[-1]
-change = end_price - start_price
-
-st.subheader("AI Prediction Summary:")
-if change > 1:
-    trend = "upward"
-elif change < -1:
-    trend = "downward"
-else:
-    trend = "flat"
-
-st.markdown(f"According to AI prediction, considering the impact of recent global stock market trends on gold prices, "
-            f"it is expected that gold prices will trend **{trend}**, from approximately **${start_price:.2f}** to **${end_price:.2f}** over the next {period} days.")
+# Display prediction chart
+st.subheader("Prediction Chart")
+plt.figure(figsize=(10, 6))
+plt.plot(df["ds"], df["y"], label="Historical Gold Price", color="blue")
+plt.plot(forecast_df["Date"], forecast_df["Predicted Price"], label=f"Predicted Gold Price ({period} days)", color="red")
+plt.xlabel("Date")
+plt.ylabel("Gold Price (USD)")
+plt.title("Gold Price Prediction with Stock Market Impact")
+plt.legend()
+st.pyplot(plt)
